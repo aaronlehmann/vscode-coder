@@ -30,7 +30,7 @@ const config = {
     rules: [
       {
         test: /\.ts$/,
-        exclude: /node_modules\/(?!(coder).*)/,
+        exclude: /node_modules\/(?!(coder|@lifeomic\/axios-fetch).*)/,
         use: [
           {
             loader: "ts-loader",
