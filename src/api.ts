@@ -1,6 +1,9 @@
+import { buildAxiosFetch } from "@lifeomic/axios-fetch"
+import { AxiosInstance } from "axios"
 import { spawn } from "child_process"
 import { Api } from "coder/site/src/api/api"
 import { ProvisionerJobLog, Workspace } from "coder/site/src/api/typesGenerated"
+import { FetchLikeInit } from "eventsource"
 import fs from "fs/promises"
 import { ProxyAgent } from "proxy-agent"
 import * as vscode from "vscode"
@@ -118,6 +121,17 @@ export async function makeCoderSdk(baseUrl: string, token: string | undefined, s
   )
 
   return restClient
+}
+
+/**
+ * Creates a fetch adapter using an Axios instance.
+ * This can be used with APIs that accept fetch-like interfaces.
+ */
+export function createFetchAdapter(axiosInstance: AxiosInstance) {
+  const axiosFetch = buildAxiosFetch(axiosInstance)
+  return (url: string | URL, init?: FetchLikeInit) => {
+    return axiosFetch(url.toString() as RequestInfo, init)
+  }
 }
 
 /**

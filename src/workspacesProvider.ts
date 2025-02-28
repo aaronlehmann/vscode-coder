@@ -1,6 +1,5 @@
 import { Api } from "coder/site/src/api/api"
 import { Workspace, WorkspaceAgent } from "coder/site/src/api/typesGenerated"
-import EventSource from "eventsource"
 import * as path from "path"
 import * as vscode from "vscode"
 import {
@@ -10,6 +9,7 @@ import {
   extractAgents,
   errToStr,
 } from "./api-helper"
+import { createStreamHandler } from "./sse-parser"
 import { Storage } from "./storage"
 
 export enum WorkspaceQuery {
@@ -222,47 +222,43 @@ export class WorkspaceProvider implements vscode.TreeDataProvider<vscode.TreeIte
   }
 }
 
-// monitorMetadata opens an SSE endpoint to monitor metadata on the specified
+// monitorMetadata opens an HTTP connection to monitor metadata on the specified
 // agent and registers a watcher that can be disposed to stop the watch and
 // emits an event when the metadata changes.
 function monitorMetadata(agentId: WorkspaceAgent["id"], restClient: Api): AgentWatcher {
-  // TODO: Is there a better way to grab the url and token?
-  const url = restClient.getAxiosInstance().defaults.baseURL
-  const token = restClient.getAxiosInstance().defaults.headers.common["Coder-Session-Token"] as string | undefined
-  const metadataUrl = new URL(`${url}/api/v2/workspaceagents/${agentId}/watch-metadata`)
-  const eventSource = new EventSource(metadataUrl.toString(), {
-    headers: {
-      "Coder-Session-Token": token,
-    },
-  })
-
-  let disposed = false
   const onChange = new vscode.EventEmitter<null>()
+
   const watcher: AgentWatcher = {
     onChange: onChange.event,
-    dispose: () => {
-      if (!disposed) {
-        eventSource.close()
-        disposed = true
-      }
-    },
+    dispose: () => {}, // Will be overwritten below
   }
 
-  eventSource.addEventListener("data", (event) => {
-    try {
-      const dataEvent = JSON.parse(event.data)
-      const metadata = AgentMetadataEventSchemaArray.parse(dataEvent)
+  // Format the URL
+  const url = restClient.getAxiosInstance().defaults.baseURL
+  const metadataUrl = `${url}/api/v2/workspaceagents/${agentId}/watch-metadata`
 
+  // Use the shared stream handler
+  const handler = createStreamHandler<AgentMetadataEvent[]>(restClient.getAxiosInstance(), {
+    url: metadataUrl,
+    parseData: (data: string) => {
+      const dataEvent = JSON.parse(data)
+      return AgentMetadataEventSchemaArray.parse(dataEvent)
+    },
+    onData: (metadata: AgentMetadataEvent[]) => {
       // Overwrite metadata if it changed.
       if (JSON.stringify(watcher.metadata) !== JSON.stringify(metadata)) {
         watcher.metadata = metadata
         onChange.fire(null)
       }
-    } catch (error) {
+    },
+    onError: (error) => {
       watcher.error = error
       onChange.fire(null)
-    }
+    },
   })
+
+  // Override the dispose function to use our handler
+  watcher.dispose = handler.dispose
 
   return watcher
 }

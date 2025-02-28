@@ -1,9 +1,9 @@
 import { Api } from "coder/site/src/api/api"
 import { Workspace } from "coder/site/src/api/typesGenerated"
 import { formatDistanceToNowStrict } from "date-fns"
-import EventSource from "eventsource"
 import * as vscode from "vscode"
 import { errToStr } from "./api-helper"
+import { createStreamHandler } from "./sse-parser"
 import { Storage } from "./storage"
 
 /**
@@ -12,7 +12,7 @@ import { Storage } from "./storage"
  * workspace status is also shown in the status bar menu.
  */
 export class WorkspaceMonitor implements vscode.Disposable {
-  private eventSource: EventSource
+  private streamHandler: { dispose: () => void } | null = null
   private disposed = false
 
   // How soon in advance to notify about autostop and deletion.
@@ -40,35 +40,27 @@ export class WorkspaceMonitor implements vscode.Disposable {
   ) {
     this.name = `${workspace.owner_name}/${workspace.name}`
     const url = this.restClient.getAxiosInstance().defaults.baseURL
-    const token = this.restClient.getAxiosInstance().defaults.headers.common["Coder-Session-Token"] as
-      | string
-      | undefined
-    const watchUrl = new URL(`${url}/api/v2/workspaces/${workspace.id}/watch`)
+    const watchUrl = `${url}/api/v2/workspaces/${workspace.id}/watch`
     this.storage.writeToCoderOutputChannel(`Monitoring ${this.name}...`)
 
-    const eventSource = new EventSource(watchUrl.toString(), {
-      headers: {
-        "Coder-Session-Token": token,
+    // Use the shared stream handler
+    this.streamHandler = createStreamHandler<Workspace>(restClient.getAxiosInstance(), {
+      url: watchUrl,
+      parseData: (data: string) => {
+        this.storage.writeToCoderOutputChannel(`parsing data: ${data}`) // FIXME remove
+        return JSON.parse(data) as Workspace
       },
-    })
-
-    eventSource.addEventListener("data", (event) => {
-      try {
-        const newWorkspaceData = JSON.parse(event.data) as Workspace
+      onData: (newWorkspaceData: Workspace) => {
+        this.storage.writeToCoderOutputChannel(`Got data: ${JSON.stringify(newWorkspaceData)}`) // FIXME remove
         this.update(newWorkspaceData)
         this.maybeNotify(newWorkspaceData)
         this.onChange.fire(newWorkspaceData)
-      } catch (error) {
+      },
+      onError: (error) => {
+        this.storage.writeToCoderOutputChannel(`got error: ${error}`) // FIXME remove
         this.notifyError(error)
-      }
+      },
     })
-
-    eventSource.addEventListener("error", (event) => {
-      this.notifyError(event.data)
-    })
-
-    // Store so we can close in dispose().
-    this.eventSource = eventSource
 
     const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 999)
     statusBarItem.name = "Coder Workspace Update"
@@ -82,13 +74,19 @@ export class WorkspaceMonitor implements vscode.Disposable {
   }
 
   /**
-   * Permanently close the SSE stream.
+   * Permanently close the stream.
    */
   dispose() {
     if (!this.disposed) {
       this.storage.writeToCoderOutputChannel(`Unmonitoring ${this.name}...`)
       this.statusBarItem.dispose()
-      this.eventSource.close()
+
+      // Close the stream handler
+      if (this.streamHandler) {
+        this.streamHandler.dispose()
+        this.streamHandler = null
+      }
+
       this.disposed = true
     }
   }
